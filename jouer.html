@@ -50,6 +50,9 @@
   .note{font-size:12px;color:var(--dim);line-height:1.5}
   .docs li{font-size:13px;margin:3px 0}
   .ok{color:#9bd18b} .ko{color:var(--rec)}
+  .cast{display:grid;grid-template-columns:110px 1fr auto;gap:6px;align-items:center;margin:6px 0;font-size:13px}
+  .cast select{font:inherit;background:#0a0a08;color:var(--ink);border:1px solid var(--line);padding:7px;width:100%}
+  .cast button{padding:7px 10px}
 </style>
 </head>
 <body>
@@ -116,7 +119,10 @@
   <div class="row"><label>Modèle Eleven</label><select id="elModel">
     <option value="eleven_flash_v2_5">Flash v2.5 (rapide)</option><option value="eleven_multilingual_v2">Multilingual v2</option><option value="eleven_v3">v3</option>
   </select></div>
-  <p class="note">Le casting (quelle voix et quel ton pour chaque PNJ) se règle dans le <a href="./" style="color:var(--amber)">banc d'essai</a> : il est partagé avec cette page. Pour Piper, installe les voix une fois depuis le banc d'essai.</p>
+  <h3>Casting ElevenLabs</h3>
+  <div class="tools" style="margin-top:0"><button id="elLoad">⟳ Charger mes voix ElevenLabs</button></div>
+  <div id="elCast"></div>
+  <p class="note">Choisis une voix par personnage et touche ▶ pour l'écouter (avec l'effet choisi). Le choix est gardé sur cet appareil et partagé avec le <a href="./" style="color:var(--amber)">banc d'essai</a>. Pour ajouter des voix à la liste, ajoute-les à ta bibliothèque sur elevenlabs.io (Voice Library ou Voice Design), puis touche ⟳. Pour Piper, installe les voix une fois depuis le banc d'essai.</p>
 
   <h3>4 · Saisie vocale</h3>
   <div class="row"><label>Lecture auto</label><select id="autoSend"><option value="0">Je relis avant d'envoyer</option><option value="1">Envoyer dès que je m'arrête de parler</option></select></div>
@@ -156,6 +162,52 @@ function voiceCfg(id){
   }
   return s;
 }
+
+/* ---------------- casting ElevenLabs ---------------- */
+const CAST_NAMES = {narrateur:"La Voix", gorge_profonde:"Gorge Profonde", jerry:"Jerry", sansom:"Sansom", samantha:"Samantha", leslie:"Leslie", gassama:"Gassama", jacob:"Jacob", lynn:"Lynn"};
+const CAST_LINES = {
+  narrateur:"Bande numéro douze. Silent Peaks, Nevada. Vingt-deux heures trente.",
+  gorge_profonde:"Vous êtes en retard ! Non, non, pas mon visage, on avait dit flouté !",
+  jerry:"Les flics sont déjà passés. Je leur ai pas dit grand-chose.",
+  sansom:"Jason ? Un amour, vraiment. Mais la vidéo, ça a un prix, mes chéris.",
+  samantha:"Oh, une caméra ? Bienvenue au StarClub Café, où chaque matin est une étoile !",
+  leslie:"Il est entré ce matin… je me suis cachée… je ne sais plus quel jour on est.",
+  gassama:"Entrez, entrez, mes amis ! Mais d'abord, laissez-moi vous protéger.",
+  jacob:"Partez. Ce qui appartient aux Callahan reste aux Callahan.",
+  lynn:"Un peu de café ? Mon mari est à l'étable. Il ne parle plus beaucoup."
+};
+function setCast(id, k, v){ const cast = store.get("cast", {}); cast[id] = Object.assign(cast[id] || {}, {[k]: v}); store.set("cast", cast); }
+function assignElDefaults(){
+  const els = store.get("elVoices", []); if (!els.length) return;
+  const cast = store.get("cast", {}), used = new Set();
+  Object.keys(CAST).forEach(id => {
+    const cur = cast[id] && cast[id].el;
+    if (cur && els.some(v => v.id === cur)){ used.add(cur); return; }
+    const same = els.filter(v => v.gender === CAST[id].g);
+    const fresh = same.filter(v => !used.has(v.id));
+    const n = Object.keys(CAST).filter(k => CAST[k].g === CAST[id].g).indexOf(id);
+    const pick = fresh[0] || (same.length ? same[n % same.length] : (els.find(v => !used.has(v.id)) || els[n % els.length]));
+    setCast(id, "el", pick.id); used.add(pick.id);
+  });
+}
+function renderElCast(){
+  const els = store.get("elVoices", []);
+  if (!els.length){ $("#elCast").innerHTML = '<p class="note">Aucune voix chargée. Colle ta clé ElevenLabs plus haut, puis touche ⟳.</p>'; return; }
+  $("#elCast").innerHTML = Object.keys(CAST).map(id => {
+    const cur = voiceCfg(id).el;
+    const opts = els.map(v => `<option value="${v.id}" ${v.id===cur?"selected":""}>${esc(v.name)}${v.gender ? (v.gender==="male"?" ♂":v.gender==="female"?" ♀":"") : ""}</option>`).join("");
+    return `<div class="cast"><span>${CAST_NAMES[id]}</span><select data-elcast="${id}">${opts}</select><button data-eltest="${id}">▶</button></div>`;
+  }).join("");
+}
+document.addEventListener("change", e => { const id = e.target.dataset && e.target.dataset.elcast; if (id) setCast(id, "el", e.target.value); });
+document.addEventListener("click", async e => {
+  const id = e.target.dataset && e.target.dataset.eltest; if (!id) return;
+  ensureCtx(); stopAudio();
+  const b = e.target; b.disabled = true; b.textContent = "…";
+  try{ const res = await synth("el", id, CAST_LINES[id]); await playBuffer(res.buf, res.rate); }
+  catch(err){ sys("Test de voix : " + err.message, true); }
+  finally{ b.disabled = false; b.textContent = "▶"; }
+});
 
 /* ---------------- documents ---------------- */
 let docs = store.get("docs", {});
@@ -212,6 +264,7 @@ function sys(t, err){ addMsg("sys", esc(t), err ? "err" : "sys"); }
 function esc(t){ return t.replace(/[&<>]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;"}[c])); }
 
 function parseMJ(text){
+  text = text.replace(/```[a-zA-Z]*\s*\n?/g, "");
   const etat = (text.match(/\[ÉTAT\]([\s\S]*?)(\[\/ÉTAT\]|$)/i) || [])[1] || "";
   let body = text.replace(/\[ÉTAT\][\s\S]*?(\[\/ÉTAT\]|$)/gi, "");
   const segments = []; let voice = "narrateur", buf = "";
@@ -241,7 +294,10 @@ async function callClaude(){
     body: JSON.stringify({
       model: $("#model").value, max_tokens: 1500,
       system: [{ type:"text", text: systemPrompt(), cache_control:{type:"ephemeral"} }],
-      messages: history.map(m => ({role:m.role, content:m.content}))
+      // cache aussi l'historique : chaque tour relit la partie au tarif « cache » (10 x moins cher)
+      messages: history.map((m, i) => i === history.length - 1
+        ? {role:m.role, content:[{type:"text", text:m.content, cache_control:{type:"ephemeral"}}]}
+        : {role:m.role, content:m.content})
     })
   });
   if (!r.ok) throw new Error("Claude "+r.status+" : "+(await r.text()).slice(0,240));
@@ -443,6 +499,19 @@ $("#closeSet").onclick = () => $("#drawer").classList.remove("open");
   el.addEventListener("change", () => { store.set(k, el.value.trim()); if (k === "brain") updateMode(); });
 });
 updateMode();
+$("#elLoad").onclick = async () => {
+  const key = $("#kEL").value.trim(); store.set("kEL", key);
+  if (!key){ sys("Colle d'abord ta clé ElevenLabs.", true); return; }
+  $("#elLoad").disabled = true; $("#elLoad").textContent = "Chargement…";
+  try{
+    const r = await fetch("https://api.elevenlabs.io/v1/voices", { headers:{ "xi-api-key": key } });
+    if (!r.ok) throw new Error("ElevenLabs répond " + r.status + " : vérifie la clé et ses permissions (Voices en lecture).");
+    const j = await r.json();
+    store.set("elVoices", (j.voices || []).map(v => ({ id:v.voice_id, name:v.name, gender:(v.labels && v.labels.gender) || "" })));
+    assignElDefaults(); renderElCast();
+  } catch(err){ sys(err.message, true); }
+  finally{ $("#elLoad").disabled = false; $("#elLoad").textContent = "⟳ Charger mes voix ElevenLabs"; }
+};
 $("#forget").onclick = () => { ["kAN","kOA","kEL"].forEach(k => { $("#"+k).value = ""; store.set(k, ""); }); sys("Clés effacées de cet appareil."); };
 
 /* horloge */
@@ -450,9 +519,9 @@ const t0 = Date.now();
 setInterval(() => { const s = Math.floor((Date.now()-t0)/1000); $("#clock").textContent = [s/3600|0,(s/60|0)%60,s%60].map(n=>String(n).padStart(2,"0")).join(":"); }, 1000);
 
 /* démarrage */
-renderDocs();
+renderDocs(); renderElCast();
 if (history.length){
-  sys(`Partie reprise (${history.length} échanges). Coût estimé jusqu'ici : ${usage.in} jetons envoyés (${usage.cached} en cache), ${usage.out} reçus.`);
+  sys(`Partie reprise (${history.length} échanges). Consommation jusqu'ici : ${usage.in} jetons envoyés, ${usage.cached} relus en cache, ${usage.out} reçus.`);
   history.forEach(m => m.role === "user" ? addMsg("me", esc(m.content)) : renderMJ(m.content, false));
 } else if (pasteMode()){
   sys("Mode copier-coller : joue dans ton Projet Claude, copie chaque réponse de la Voix, puis touche « 📋 Coller et lire » (ou colle-la en bas et touche ➤). Voix réglées dans ⚙.");
