@@ -88,6 +88,11 @@
   <p class="note">Sélectionne les fichiers .md : brief de l'avatar, fiche système, fiche scénario (la méthode est facultative). Ils sont reconnus d'après leur nom.</p>
 
   <h3>2 · Cerveau (Claude)</h3>
+  <div class="row"><label>Mode</label><select id="brain">
+    <option value="paste">Mon Projet Claude (copier-coller, gratuit)</option>
+    <option value="api">API Anthropic (automatique, payant)</option>
+  </select></div>
+  <p class="note">Mode copier-coller : tu joues dans ton Projet Claude (avec le brief, la fiche système et la fiche scénario), tu copies chaque réponse de la Voix et tu la colles ici. L'app la lit avec les voix des PNJ. Les documents et la clé Anthropic ci-dessous ne servent qu'au mode API.</p>
   <div class="row"><label>Clé Anthropic</label><input type="password" id="kAN" placeholder="sk-ant-..."></div>
   <div class="row"><label>Modèle</label><select id="model">
     <option value="claude-sonnet-5-5">Sonnet 5.5 (recommandé)</option>
@@ -245,8 +250,25 @@ async function callClaude(){
   return (j.content || []).filter(c => c.type === "text").map(c => c.text).join("\n");
 }
 
+function pasteMode(){ return $("#brain").value === "paste"; }
+function updateMode(){
+  const p = pasteMode();
+  $("#txt").placeholder = p ? "Colle ici la réponse de la Voix…" : "Archie : je montre ma carte de presse…";
+  $("#start").textContent = p ? "📋 Coller et lire" : "▶ Lancer la partie";
+  $("#mic").style.display = p ? "none" : "";
+}
+async function readPasted(text){
+  ensureCtx();
+  if (!text){
+    try{ text = (await navigator.clipboard.readText()).trim(); }catch(e){}
+    if (!text){ sys("Copie la réponse de la Voix dans ton Projet Claude, puis colle-la dans le champ du bas et touche ➤."); return; }
+  }
+  history.push({role:"assistant", content:text}); store.set("history", history);
+  renderMJ(text, true);
+}
 async function turn(userText){
   if (busy) return;
+  if (pasteMode()){ readPasted(userText); return; }
   if (!docsReady()){ openSet(); sys("Il manque des documents du MJ (⚙ › Documents)."); return; }
   ensureCtx();
   busy = true; $("#send").disabled = true;
@@ -397,12 +419,13 @@ $("#mic").onclick = () => {
 $("#send").onclick = () => { const t = $("#txt").value.trim(); if (!t) return; $("#txt").value = ""; turn(t); };
 $("#txt").addEventListener("keydown", e => { if (e.key === "Enter" && !e.shiftKey){ e.preventDefault(); $("#send").click(); } });
 $("#start").onclick = () => {
+  if (pasteMode()){ readPasted(""); return; }
   if (history.length){ sys("Une partie est déjà en cours. « ✕ Nouvelle partie » pour recommencer."); return; }
   turn("Lance la partie.");
 };
 $("#stopAudio").onclick = () => { stopAudio(); setMood("silence"); };
 $("#replay").onclick = () => { ensureCtx(); if (lastParsed) speak(lastParsed.segments); };
-$("#journal").onclick = () => turn("Fin de session. Remplis le journal de partie (Méthode, Partie F), sans balises de voix, en texte simple.");
+$("#journal").onclick = () => pasteMode() ? sys("En mode copier-coller, demande le journal directement dans ton Projet Claude : « Fin de session. Remplis le journal de partie. »") : turn("Fin de session. Remplis le journal de partie (Méthode, Partie F), sans balises de voix, en texte simple.");
 let confirmNew = false;
 $("#newGame").onclick = () => {
   if (!confirmNew){ confirmNew = true; $("#newGame").textContent = "✕ Confirmer ?"; setTimeout(() => { confirmNew = false; $("#newGame").textContent = "✕ Nouvelle partie"; }, 3000); return; }
@@ -415,10 +438,11 @@ $("#jet").onclick = () => $("#jet").style.display = "none";
 function openSet(){ $("#drawer").classList.add("open"); }
 $("#openSet").onclick = openSet;
 $("#closeSet").onclick = () => $("#drawer").classList.remove("open");
-["kAN","kOA","kEL","model","engine","fx","elModel","autoSend"].forEach(k => {
+["kAN","kOA","kEL","model","engine","fx","elModel","autoSend","brain"].forEach(k => {
   const el = $("#"+k); const v = store.get(k, null); if (v !== null) el.value = v;
-  el.addEventListener("change", () => store.set(k, el.value.trim()));
+  el.addEventListener("change", () => { store.set(k, el.value.trim()); if (k === "brain") updateMode(); });
 });
+updateMode();
 $("#forget").onclick = () => { ["kAN","kOA","kEL"].forEach(k => { $("#"+k).value = ""; store.set(k, ""); }); sys("Clés effacées de cet appareil."); };
 
 /* horloge */
@@ -430,6 +454,8 @@ renderDocs();
 if (history.length){
   sys(`Partie reprise (${history.length} échanges). Coût estimé jusqu'ici : ${usage.in} jetons envoyés (${usage.cached} en cache), ${usage.out} reçus.`);
   history.forEach(m => m.role === "user" ? addMsg("me", esc(m.content)) : renderMJ(m.content, false));
+} else if (pasteMode()){
+  sys("Mode copier-coller : joue dans ton Projet Claude, copie chaque réponse de la Voix, puis touche « 📋 Coller et lire » (ou colle-la en bas et touche ➤). Voix réglées dans ⚙.");
 } else if (!docsReady() || !store.get("kAN","")){
   sys("Bienvenue. Ouvre ⚙ pour charger les documents du MJ et ta clé Anthropic, puis touche « ▶ Lancer la partie ».");
 } else sys("Prêt. Touche « ▶ Lancer la partie ».");
