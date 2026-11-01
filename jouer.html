@@ -58,7 +58,7 @@
 <body>
 <div class="app">
   <div class="monitor" id="monitor">
-    <div class="osd"><span class="rec"><span class="dot"></span>REC</span><span id="clock">00:00:00</span><button id="openSet" style="padding:2px 8px">⚙</button></div>
+    <div class="osd"><span class="rec"><span class="dot"></span>REC</span><span id="clock">00:00:00</span><span id="ver" style="color:var(--dim)"></span><button id="openSet" style="padding:2px 8px">⚙</button></div>
     <div class="face" id="face"></div>
     <div><div class="who" id="who">LA VOIX</div><div class="mood" id="mood">en attente</div></div>
     <div class="jet" id="jet"></div>
@@ -127,10 +127,26 @@
   <h3>4 · Saisie vocale</h3>
   <div class="row"><label>Lecture auto</label><select id="autoSend"><option value="0">Je relis avant d'envoyer</option><option value="1">Envoyer dès que je m'arrête de parler</option></select></div>
 
+  <h3>Version</h3>
+  <p class="note" id="verNote"></p>
+  <ul class="note" id="changelog" style="padding-left:18px;margin:4px 0"></ul>
+
   <div class="tools"><button id="closeSet" class="main">Fermer</button><button id="forget">Effacer les clés</button></div>
 </div></div>
 
 <script>
+/* ---------------- version ---------------- */
+const APP_VERSION = "1.5";
+const APP_DATE = "01/11/2026";
+const CHANGELOG = [
+  ["1.5", "Lecture audio fiable sur iPhone (mode silencieux, retour depuis une autre app), répliques demandées une par une"],
+  ["1.4", "Choix des voix ElevenLabs par personnage dans les réglages"],
+  ["1.3", "Accepte les réponses copiées depuis un bloc de code"],
+  ["1.2", "Mode copier-coller gratuit (Projet Claude)"],
+  ["1.1", "Mode API moins cher (cache de l'historique)"],
+  ["1.0", "Première version : avatar, voix, dictée, sauvegarde de la partie"]
+];
+
 /* ---------------- stockage ---------------- */
 const $ = s => document.querySelector(s);
 const store = {
@@ -374,7 +390,10 @@ function thinking(on){
 let ctx = null, current = [], playToken = 0;
 function ensureCtx(){
   if (!ctx){ ctx = new (window.AudioContext || window.webkitAudioContext)(); analyser = ctx.createAnalyser(); analyser.fftSize = 128; analyser.connect(ctx.destination); }
-  if (ctx.state === "suspended") ctx.resume();
+  // iPhone : jouer même en mode silencieux, et réveiller l'audio après un passage dans une autre app
+  try{ if (navigator.audioSession) navigator.audioSession.type = "playback"; }catch(e){}
+  if (ctx.state !== "running"){ try{ ctx.resume(); }catch(e){} }
+  try{ const b = ctx.createBuffer(1, 1, 22050), s = ctx.createBufferSource(); s.buffer = b; s.connect(ctx.destination); s.start(0); }catch(e){}
 }
 function curve(a){ const n=2048,c=new Float32Array(n); for(let i=0;i<n;i++){const x=i*2/n-1;c[i]=((1+a)*x)/(1+a*Math.abs(x));} return c; }
 function stopAudio(){ playToken++; current.forEach(n => { try{ n.stop(); }catch(e){} }); current = []; }
@@ -436,7 +455,19 @@ async function speak(segments){
   stopAudio(); const token = playToken;
   const engine = $("#engine").value;
   // lance toutes les synthèses en parallèle, joue dans l'ordre
-  const jobs = segments.map(s => s.text && engine !== "off" ? synth(engine, s.voice, s.text).catch(e => ({err:e})) : null);
+  // synthèse en file : on prépare la réplique suivante pendant que la courante est lue
+  // (les offres gratuites refusent trop de requêtes simultanées)
+  const jobs = new Array(segments.length).fill(null);
+  const job = i => {
+    if (i >= segments.length || jobs[i] || !segments[i].text || engine === "off") return jobs[i];
+    const s = segments[i];
+    jobs[i] = synth(engine, s.voice, s.text)
+      .catch(async e => { if (/429/.test(e.message)){ await new Promise(r => setTimeout(r, 1500)); return synth(engine, s.voice, s.text); } throw e; })
+      .catch(e => ({err:e}));
+    return jobs[i];
+  };
+  const nextText = from => { for (let k = from; k < segments.length; k++) if (segments[k].text) return k; return -1; };
+  job(nextText(0));
   for (let i=0; i<segments.length; i++){
     if (token !== playToken) return;
     const s = segments[i];
@@ -445,10 +476,13 @@ async function speak(segments){
     else if (s.tag === "parole"){ setMood("à vous"); }
     else if (s.text){
       setWho(s.voice);
-      const res = await jobs[i];
+      const res = await job(i);
+      const nx = nextText(i + 1); if (nx >= 0) job(nx);
       if (!res) continue;
       if (res.err){ sys("Voix : " + res.err.message, true); continue; }
       if (token !== playToken) return;
+      if (ctx.state !== "running"){ try{ await ctx.resume(); }catch(e){} }
+      if (ctx.state !== "running"){ sys("Le son est bloqué par le téléphone : touche « ↺ Réécouter ».", true); return; }
       await playBuffer(res.buf, res.rate);
     }
   }
@@ -519,6 +553,9 @@ const t0 = Date.now();
 setInterval(() => { const s = Math.floor((Date.now()-t0)/1000); $("#clock").textContent = [s/3600|0,(s/60|0)%60,s%60].map(n=>String(n).padStart(2,"0")).join(":"); }, 1000);
 
 /* démarrage */
+$("#ver").textContent = "v" + APP_VERSION;
+$("#verNote").textContent = `App de jeu v${APP_VERSION} du ${APP_DATE}. Si ce numéro ne correspond pas à la dernière version envoyée, ferme l'onglet et rouvre-le (ou attends quelques minutes que GitHub se mette à jour).`;
+$("#changelog").innerHTML = CHANGELOG.map(([v, t]) => `<li><b>v${v}</b> : ${t}</li>`).join("");
 renderDocs(); renderElCast();
 if (history.length){
   sys(`Partie reprise (${history.length} échanges). Consommation jusqu'ici : ${usage.in} jetons envoyés, ${usage.cached} relus en cache, ${usage.out} reçus.`);
