@@ -136,9 +136,10 @@
 
 <script>
 /* ---------------- version ---------------- */
-const APP_VERSION = "1.5";
+const APP_VERSION = "1.6";
 const APP_DATE = "01/11/2026";
 const CHANGELOG = [
+  ["1.6", "Messages d'erreur ElevenLabs et OpenAI expliqués, un seul message en cas de clé refusée"],
   ["1.5", "Lecture audio fiable sur iPhone (mode silencieux, retour depuis une autre app), répliques demandées une par une"],
   ["1.4", "Choix des voix ElevenLabs par personnage dans les réglages"],
   ["1.3", "Accepte les réponses copiées depuis un bloc de code"],
@@ -438,7 +439,7 @@ async function synth(engine, voiceId, text){
     const key = $("#kOA").value.trim(); if (!key) throw new Error("Clé OpenAI manquante.");
     const r = await fetch("https://api.openai.com/v1/audio/speech", {method:"POST", headers:{Authorization:"Bearer "+key, "Content-Type":"application/json"},
       body: JSON.stringify({model:"gpt-4o-mini-tts", voice:v.oa, input:text, instructions:"Parle en français de France, sans accent étranger. "+v.dir, response_format:"mp3"})});
-    if (!r.ok) throw new Error("OpenAI "+r.status);
+    if (!r.ok) throw new Error("OpenAI " + r.status + (r.status === 401 ? " → clé OpenAI refusée, vérifie-la dans ⚙." : ""));
     return {buf: await ctx.decodeAudioData(await r.arrayBuffer()), rate:1};
   }
   if (engine === "el"){
@@ -447,7 +448,13 @@ async function synth(engine, voiceId, text){
     const model = $("#elModel").value, body = {text, model_id:model, voice_settings:{stability:.5, similarity_boost:.75, style:.35}};
     if (model === "eleven_flash_v2_5") body.language_code = "fr";
     const r = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${encodeURIComponent(v.el)}?output_format=mp3_44100_128`, {method:"POST", headers:{"xi-api-key":key,"Content-Type":"application/json"}, body:JSON.stringify(body)});
-    if (!r.ok) throw new Error("ElevenLabs "+r.status);
+    if (!r.ok){
+      let detail = ""; try{ const j = await r.json(); detail = (j.detail && (j.detail.message || j.detail.status || JSON.stringify(j.detail))) || ""; }catch(e){}
+      const hint = r.status === 401 ? " → clé refusée : elle est fausse, supprimée, ou n'a pas la permission « Text to Speech ». Recrée-la sur elevenlabs.io (Developers › API Keys) et colle-la dans ⚙."
+                 : r.status === 402 || /quota|credit/i.test(detail) ? " → crédits ElevenLabs épuisés pour ce mois."
+                 : r.status === 429 ? " → trop de demandes à la fois, réessaie dans un instant." : "";
+      throw new Error("ElevenLabs " + r.status + (detail ? " (" + detail + ")" : "") + hint);
+    }
     return {buf: await ctx.decodeAudioData(await r.arrayBuffer()), rate:1};
   }
 }
@@ -479,7 +486,7 @@ async function speak(segments){
       const res = await job(i);
       const nx = nextText(i + 1); if (nx >= 0) job(nx);
       if (!res) continue;
-      if (res.err){ sys("Voix : " + res.err.message, true); continue; }
+      if (res.err){ sys("Voix : " + res.err.message, true); if (/ 40[12]/.test(res.err.message)) return; continue; }
       if (token !== playToken) return;
       if (ctx.state !== "running"){ try{ await ctx.resume(); }catch(e){} }
       if (ctx.state !== "running"){ sys("Le son est bloqué par le téléphone : touche « ↺ Réécouter ».", true); return; }
