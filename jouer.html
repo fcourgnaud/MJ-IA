@@ -109,6 +109,7 @@
     <option value="pi">Piper (gratuit, hors ligne)</option>
     <option value="oa">OpenAI</option>
     <option value="el">ElevenLabs</option>
+    <option value="vs">VoiceStudio (sur ton Mac, gratuit)</option>
     <option value="off">Muet (texte seul)</option>
   </select></div>
   <div class="row"><label>Effet</label><select id="fx">
@@ -124,6 +125,14 @@
   <div id="elCast"></div>
   <p class="note">Choisis une voix par personnage et touche ▶ pour l'écouter (avec l'effet choisi). Le choix est gardé sur cet appareil et partagé avec le <a href="./" style="color:var(--amber)">banc d'essai</a>. Pour ajouter des voix à la liste, ajoute-les à ta bibliothèque sur elevenlabs.io (Voice Library ou Voice Design), puis touche ⟳. Pour Piper, installe les voix une fois depuis le banc d'essai.</p>
 
+  <h3>VoiceStudio</h3>
+  <div class="row"><label>Adresse</label><input type="text" id="vsUrl" placeholder="http://localhost:3900" autocapitalize="off" autocorrect="off"></div>
+  <div class="row"><label>Code PIN</label><input type="text" id="vsPin" placeholder="vide si l'app tourne sur ce Mac" inputmode="numeric"></div>
+  <div class="row"><label>Consignes</label><select id="vsInstruct"><option value="0">Ne pas envoyer</option><option value="1">Envoyer la consigne de jeu du PNJ (instruct)</option></select></div>
+  <div class="tools" style="margin-top:0"><button id="vsLoad">⟳ Charger mes voix VoiceStudio</button></div>
+  <div id="vsCast"></div>
+  <p class="note">Sur le Mac : laisse l'adresse http://localhost:3900 et le PIN vide. Depuis un autre appareil : active le partage réseau dans VoiceStudio (Réglages › Sharing &amp; Remote Access), mets l'adresse du Mac (ex. http://192.168.1.20:3900) et le PIN à 6 chiffres affiché par VoiceStudio.</p>
+
   <h3>4 · Saisie vocale</h3>
   <div class="row"><label>Lecture auto</label><select id="autoSend"><option value="0">Je relis avant d'envoyer</option><option value="1">Envoyer dès que je m'arrête de parler</option></select></div>
 
@@ -136,9 +145,10 @@
 
 <script>
 /* ---------------- version ---------------- */
-const APP_VERSION = "1.6";
+const APP_VERSION = "1.7";
 const APP_DATE = "01/11/2026";
 const CHANGELOG = [
+  ["1.7", "Nouveau moteur de voix : VoiceStudio (gratuit, sur ton Mac), avec casting par personnage"],
   ["1.6", "Messages d'erreur ElevenLabs et OpenAI expliqués, un seul message en cas de clé refusée"],
   ["1.5", "Lecture audio fiable sur iPhone (mode silencieux, retour depuis une autre app), répliques demandées une par une"],
   ["1.4", "Choix des voix ElevenLabs par personnage dans les réglages"],
@@ -170,7 +180,7 @@ const CAST = {
 function voiceCfg(id){
   const cast = store.get("cast", {});
   const base = CAST[id] || CAST.narrateur;
-  const s = Object.assign({oa:base.oa, ton:base.ton, dir:base.dir, el:"", pi:""}, cast[id] || cast.narrateur || {});
+  const s = Object.assign({oa:base.oa, ton:base.ton, dir:base.dir, el:"", pi:"", vs:""}, cast[id] || cast.narrateur || {});
   if (!CAST[id] && cast.narrateur) Object.assign(s, cast.narrateur);
   if (!s.pi){
     const piv = store.get("piVoices", []);
@@ -222,6 +232,38 @@ document.addEventListener("click", async e => {
   ensureCtx(); stopAudio();
   const b = e.target; b.disabled = true; b.textContent = "…";
   try{ const res = await synth("el", id, CAST_LINES[id]); await playBuffer(res.buf, res.rate); }
+  catch(err){ sys("Test de voix : " + err.message, true); }
+  finally{ b.disabled = false; b.textContent = "▶"; }
+});
+
+/* ---------------- VoiceStudio ---------------- */
+function vsHeaders(json){ const h = {}; if (json) h["Content-Type"] = "application/json"; const pin = $("#vsPin").value.trim(); if (pin) h["X-OmniVoice-Pin"] = pin; return h; }
+function vsNetErr(base){
+  const httpsPage = location.protocol === "https:";
+  return "VoiceStudio injoignable à " + base + ". Vérifie que l'app VoiceStudio est ouverte"
+    + (httpsPage && !/localhost|127\.0\.0\.1/.test(base) ? ". Attention : cette page est en https et ne peut pas appeler une adresse locale en http depuis un autre appareil (voir les explications de Claude)." : "")
+    + (httpsPage ? ". Si VoiceStudio est bien ouvert, il refuse sans doute cette page : relance-le avec l'autorisation d'origine " + location.origin + " (commande donnée par Claude)." : ".");
+}
+function assignVsDefaults(){
+  const vs = store.get("vsVoices", []); if (!vs.length) return;
+  const cast = store.get("cast", {});
+  Object.keys(CAST).forEach((id, n) => { const cur = cast[id] && cast[id].vs; if (!cur || !vs.some(v => v.id === cur)) setCast(id, "vs", vs[n % vs.length].id); });
+}
+function renderVsCast(){
+  const vs = store.get("vsVoices", []);
+  if (!vs.length){ $("#vsCast").innerHTML = '<p class="note">Aucune voix VoiceStudio chargée.</p>'; return; }
+  $("#vsCast").innerHTML = Object.keys(CAST).map(id => {
+    const cur = voiceCfg(id).vs;
+    const opts = vs.map(v => `<option value="${esc(v.id)}" ${v.id===cur?"selected":""}>${esc(v.name)}</option>`).join("");
+    return `<div class="cast"><span>${CAST_NAMES[id]}</span><select data-vscast="${id}">${opts}</select><button data-vstest="${id}">▶</button></div>`;
+  }).join("");
+}
+document.addEventListener("change", e => { const id = e.target.dataset && e.target.dataset.vscast; if (id) setCast(id, "vs", e.target.value); });
+document.addEventListener("click", async e => {
+  const id = e.target.dataset && e.target.dataset.vstest; if (!id) return;
+  ensureCtx(); stopAudio();
+  const b = e.target; b.disabled = true; b.textContent = "…";
+  try{ const res = await synth("vs", id, CAST_LINES[id]); await playBuffer(res.buf, res.rate); }
   catch(err){ sys("Test de voix : " + err.message, true); }
   finally{ b.disabled = false; b.textContent = "▶"; }
 });
@@ -442,6 +484,18 @@ async function synth(engine, voiceId, text){
     if (!r.ok) throw new Error("OpenAI " + r.status + (r.status === 401 ? " → clé OpenAI refusée, vérifie-la dans ⚙." : ""));
     return {buf: await ctx.decodeAudioData(await r.arrayBuffer()), rate:1};
   }
+  if (engine === "vs"){
+    const base = ($("#vsUrl").value.trim() || "http://localhost:3900").replace(/\/+$/, "");
+    if (!v.vs) throw new Error("Pas de voix VoiceStudio pour « " + voiceId + " » : touche ⟳ Charger mes voix VoiceStudio dans ⚙.");
+    const body = {model:"tts-1", voice:v.vs, input:text, response_format:"wav"};
+    if ($("#vsInstruct").value === "1") body.instruct = v.dir;
+    let r;
+    try{ r = await fetch(base + "/v1/audio/speech", {method:"POST", headers: vsHeaders(true), body: JSON.stringify(body)}); }
+    catch(e){ throw new Error(vsNetErr(base)); }
+    if (!r.ok){ let d = ""; try{ d = (await r.json()).detail || ""; }catch(e){}
+      throw new Error("VoiceStudio " + r.status + (d ? " (" + (typeof d === "string" ? d : JSON.stringify(d)) + ")" : "") + (r.status === 401 ? " → PIN manquant ou faux : recopie celui affiché par VoiceStudio." : "")); }
+    return {buf: await ctx.decodeAudioData(await r.arrayBuffer()), rate:1};
+  }
   if (engine === "el"){
     const key = $("#kEL").value.trim(); if (!key) throw new Error("Clé ElevenLabs manquante.");
     if (!v.el) throw new Error("Pas de voix ElevenLabs pour « "+voiceId+" » : règle le casting dans le banc d'essai.");
@@ -535,7 +589,7 @@ $("#jet").onclick = () => $("#jet").style.display = "none";
 function openSet(){ $("#drawer").classList.add("open"); }
 $("#openSet").onclick = openSet;
 $("#closeSet").onclick = () => $("#drawer").classList.remove("open");
-["kAN","kOA","kEL","model","engine","fx","elModel","autoSend","brain"].forEach(k => {
+["kAN","kOA","kEL","model","engine","fx","elModel","autoSend","brain","vsUrl","vsPin","vsInstruct"].forEach(k => {
   const el = $("#"+k); const v = store.get(k, null); if (v !== null) el.value = v;
   el.addEventListener("change", () => { store.set(k, el.value.trim()); if (k === "brain") updateMode(); });
 });
@@ -553,6 +607,22 @@ $("#elLoad").onclick = async () => {
   } catch(err){ sys(err.message, true); }
   finally{ $("#elLoad").disabled = false; $("#elLoad").textContent = "⟳ Charger mes voix ElevenLabs"; }
 };
+$("#vsLoad").onclick = async () => {
+  const base = ($("#vsUrl").value.trim() || "http://localhost:3900").replace(/\/+$/, "");
+  $("#vsLoad").disabled = true; $("#vsLoad").textContent = "Chargement…";
+  try{
+    let r;
+    try{ r = await fetch(base + "/v1/audio/voices", { headers: vsHeaders(false) }); }catch(e){ throw new Error(vsNetErr(base)); }
+    if (!r.ok) throw new Error("VoiceStudio répond " + r.status + (r.status === 401 ? " : PIN manquant ou faux." : "."));
+    const j = await r.json();
+    const arr = Array.isArray(j) ? j : (j.voices || j.data || j.profiles || []);
+    const list = arr.map(v => typeof v === "string" ? {id:v, name:v} : {id: v.id || v.voice_id || v.profile_id || v.name, name: v.name || v.display_name || v.id || v.voice_id}).filter(v => v.id);
+    if (!list.length) throw new Error("VoiceStudio ne renvoie aucune voix : crée ou clone d'abord des voix dans l'app VoiceStudio.");
+    store.set("vsVoices", list); assignVsDefaults(); renderVsCast();
+    sys(`✔ ${list.length} voix VoiceStudio chargées.`);
+  } catch(err){ sys(err.message, true); }
+  finally{ $("#vsLoad").disabled = false; $("#vsLoad").textContent = "⟳ Charger mes voix VoiceStudio"; }
+};
 $("#forget").onclick = () => { ["kAN","kOA","kEL"].forEach(k => { $("#"+k).value = ""; store.set(k, ""); }); sys("Clés effacées de cet appareil."); };
 
 /* horloge */
@@ -563,7 +633,7 @@ setInterval(() => { const s = Math.floor((Date.now()-t0)/1000); $("#clock").text
 $("#ver").textContent = "v" + APP_VERSION;
 $("#verNote").textContent = `App de jeu v${APP_VERSION} du ${APP_DATE}. Si ce numéro ne correspond pas à la dernière version envoyée, ferme l'onglet et rouvre-le (ou attends quelques minutes que GitHub se mette à jour).`;
 $("#changelog").innerHTML = CHANGELOG.map(([v, t]) => `<li><b>v${v}</b> : ${t}</li>`).join("");
-renderDocs(); renderElCast();
+renderDocs(); renderElCast(); renderVsCast();
 if (history.length){
   sys(`Partie reprise (${history.length} échanges). Consommation jusqu'ici : ${usage.in} jetons envoyés, ${usage.cached} relus en cache, ${usage.out} reçus.`);
   history.forEach(m => m.role === "user" ? addMsg("me", esc(m.content)) : renderMJ(m.content, false));
